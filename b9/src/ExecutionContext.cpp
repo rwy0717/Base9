@@ -28,6 +28,7 @@ ExecutionContext::ExecutionContext(VirtualMachine& virtualMachine,
     : omContext_(virtualMachine.memoryManager()),
       virtualMachine_(&virtualMachine),
       cfg_(&cfg),
+      this_(nullptr),
       fn_(0),
       ip_(0),
       bp_(stack().top()),
@@ -36,7 +37,19 @@ ExecutionContext::ExecutionContext(VirtualMachine& virtualMachine,
       [this](Om::MarkingVisitor& v) { this->visit(v); });
 }
 
+void ExecutionContext::clear() {
+  this_ = nullptr;
+  fn_ = 0;
+  ip_ = nullptr;
+  bp_ = nullptr;
+  continue_ = false;
+}
+
 void ExecutionContext::reset() {
+  this_ = Om::allocateEmptyObject(*this);
+  fn_ = 0;
+  ip_ = nullptr;
+  bp_ = stack().top();
   continue_ = true;
   stack_.reset();
 }
@@ -100,7 +113,8 @@ StackElement ExecutionContext::run(std::size_t target) {
   assert(callee.nparams == 0);
 
   reset();
-  enterCall(target);
+
+  enterCall(target, CallerType::OUTERMOST);
   interpret();
   return stack_.pop();
 }
@@ -198,6 +212,12 @@ void ExecutionContext::interpret() {
       case OpCode::SYSTEM_COLLECT:
         doSystemCollect();
         break;
+      case OpCode::NEW:
+        doNew();
+        break;
+      case OpCode::PUSH_THIS:
+        doPushThis();
+        break;
       case OpCode::END_SECTION:
         continue_ = false;
         break;
@@ -208,33 +228,44 @@ void ExecutionContext::interpret() {
 
     if (cfg_->debug) {
       backtrace(std::cerr) << std::endl;
-      // printStack(std::cerr, stack());
+      printStack(std::cerr, stack());
     }
   }
 }
 
-std::size_t FRAME_SIZE = sizeof(Om::Value) * 4;
+/// in number of slots.
+std::size_t FRAME_SIZE = 5;
 
-void ExecutionContext::enterCall(std::size_t target, CallerType type) {
+void ExecutionContext::enterCall(std::size_t target, CallerType type,
+                                 Om::Object* thisp) {
   const FunctionDef& callee = getFunction(target);
 
   // reserve space for locals (args are already pushed)
   stack_.pushn(callee.nlocals);
 
   // save caller's interpreter state.
+  stack_.push({Om::AS_REF, this_});
   stack_.push({Om::AS_UINT48, fn_});
   stack_.push({Om::AS_PTR, ip_});
   stack_.push({Om::AS_PTR, bp_});
   stack_.push({Om::AS_UINT48, std::uint64_t(type)});
 
   // set up state for callee
+  this_ = thisp;
   fn_ = target;
   ip_ = callee.instructions.data();
   bp_ = stack_.top();
 }
 
+void ExecutionContext::enterCall(std::size_t target, CallerType type) {
+  enterCall(target, type, this_);
+}
+
 void ExecutionContext::exitCall() {
   const FunctionDef& callee = getFunction(fn_);
+
+  Om::Value result = stack().pop();
+  Om::Object* thisp = this_;
 
   // pop callee scratch space
   stack_.restore(bp_);
@@ -244,19 +275,32 @@ void ExecutionContext::exitCall() {
   bp_ = stack_.pop().getPtr<Om::Value>();
   ip_ = stack_.pop().getPtr<Instruction>();
   fn_ = stack_.pop().getUint48();
+  this_ = stack_.pop().getRef<Om::Object>();
 
   // pop parameters and locals
   stack_.popn(callee.nparams + callee.nlocals);
 
+  // handle the exit based on the frame type:
   switch (type) {
     case CallerType::INTERPRETER:
+      // normal return to interpreted caller.
+      stack().push(result);
       continue_ = true;
       break;
-    case CallerType::OUTERMOST:
-      continue_ = false;
+    case CallerType::INTERPRETER_NEW:
+      // called as part of new expression--result is THIS.
+      stack().push({Om::AS_REF, thisp});
+      continue_ = true;
       break;
     case CallerType::COMPILED:
+      // Not properly handled yet.
       assert(0);
+      stack().push(result);
+      continue_ = false;
+      break;
+    case CallerType::OUTERMOST:
+      // Halt execution, exiting program.
+      stack().push(result);
       continue_ = false;
       break;
   }
@@ -264,10 +308,14 @@ void ExecutionContext::exitCall() {
 
 void ExecutionContext::doFunctionCall() { enterCall(ip_->immediate()); }
 
+void ExecutionContext::doNew() {
+  auto target = ip_->immediate();
+  auto thisp = Om::allocateEmptyObject(*this);
+  enterCall(target, CallerType::INTERPRETER_NEW, thisp);
+}
+
 void ExecutionContext::doFunctionReturn() {
-  StackElement result = stack_.pop();
   exitCall();
-  stack_.push(result);
   ++ip_;
 }
 
@@ -308,19 +356,17 @@ void ExecutionContext::doPopIntoLocal() {
 
 void ExecutionContext::doPushFromParam() {
   const FunctionDef& callee = getFunction(fn_);
-  Om::Value* locals = bp_ - (FRAME_SIZE + callee.nlocals + callee.nparams);
+  Om::Value* params = bp_ - (FRAME_SIZE + callee.nlocals + callee.nparams);
   Immediate index = ip_->immediate();
-  stack_.push(locals[index]);
+  stack_.push(params[index]);
   ++ip_;
 }
 
 void ExecutionContext::doPopIntoParam() {
   const FunctionDef& callee = getFunction(fn_);
-  Om::Value* locals =
-      bp_ - (FRAME_SIZE + callee.nlocals +
-             callee.nparams);  // TODO: Improve variable indexing
+  Om::Value* params = bp_ - (FRAME_SIZE + callee.nlocals + callee.nparams);
   Immediate index = ip_->immediate();
-  locals[index] = stack_.pop();
+  params[index] = stack_.pop();
   ++ip_;
 }
 
@@ -460,7 +506,7 @@ void ExecutionContext::doPushFromObject() {
   ++ip_;
 }
 
-// ( object value -- )
+// ( object value -- object )
 void ExecutionContext::doPopIntoObject() {
   Om::Id slotId(ip_->immediate());
 
@@ -475,7 +521,7 @@ void ExecutionContext::doPopIntoObject() {
   bool found = Om::lookupSlot(*this, object, slotId, descriptor);
 
   if (!found) {
-    static constexpr Om::SlotType type(Om::Id(0), Om::CoreType::VALUE);
+    constexpr Om::SlotType type(Om::Id(0), Om::CoreType::VALUE);
 
     Om::RootRef<Om::Object> root(*this, object);
     auto map = Om::transitionLayout(*this, root, {{type, slotId}});
@@ -488,6 +534,7 @@ void ExecutionContext::doPopIntoObject() {
 
   auto val = pop();
   Om::setValue(*this, object, descriptor, val);
+  push({Om::AS_REF, object});
   // TODO: Write barrier the object on store.
   ++ip_;
 }
@@ -500,6 +547,11 @@ void ExecutionContext::doCallIndirect() {
 void ExecutionContext::doSystemCollect() {
   std::cout << "SYSTEM COLLECT!!!" << std::endl;
   OMR_GC_SystemCollect(omContext_.vmContext(), 0);
+  ++ip_;
+}
+
+void ExecutionContext::doPushThis() {
+  stack().push({Om::AS_REF, this_});
   ++ip_;
 }
 
@@ -538,6 +590,7 @@ std::ostream& ExecutionContext::backtrace(std::ostream& out) const {
 
   // first frame:
 
+  const Om::Object* thisp = this_;
   std::size_t fn = fn_;
   const Om::Value* bp = bp_;
   const Instruction* ip = ip_;
@@ -546,7 +599,7 @@ std::ostream& ExecutionContext::backtrace(std::ostream& out) const {
   std::size_t i = 0;
 
   while (bp > stack().base()) {
-    printCall(out, i, fn, ip, tp, bp);
+    printCall(out, i, thisp, fn, ip, tp, bp);
 
     // next frame:
 
@@ -558,7 +611,8 @@ std::ostream& ExecutionContext::backtrace(std::ostream& out) const {
     bp = frame[-2].getPtr<Om::Value>();
     ip = frame[-3].getPtr<const Instruction>();
     fn = frame[-4].getUint48();
-    tp = frame - 4 - callee.nregs - callee.nargs;
+    thisp = frame[-5].getRef<Om::Object>();
+    tp = frame - FRAME_SIZE - callee.nlocals - callee.nparams;
   };
 
   out << ")";
@@ -567,19 +621,20 @@ std::ostream& ExecutionContext::backtrace(std::ostream& out) const {
 }
 
 void ExecutionContext::printCall(std::ostream& out, std::size_t i,
-                                 std::size_t fn, const Instruction* ip,
-                                 const Om::Value* tp,
+                                 const Om::Object* thisp, std::size_t fn,
+                                 const Instruction* ip, const Om::Value* tp,
                                  const Om::Value* bp) const {
   const FunctionDef& callee = getFunction(fn);
-  std::size_t nlocals = callee.nregs;
-  std::size_t nparams = callee.nargs;
+  std::size_t nlocals = callee.nlocals;
+  std::size_t nparams = callee.nparams;
 
   out << "\n  (frame " << i;
   out << " (fn " << callee.name << " " << fn << ")";
+  out << " (this " << thisp << ")";
 
   printStackSegment(out, tp, bp);
-  printLocals(out, bp - 4 - nlocals, nlocals);
-  printParams(out, bp - 4 - nlocals - nparams, nparams);
+  printLocals(out, bp - FRAME_SIZE - nlocals, nlocals);
+  printParams(out, bp - FRAME_SIZE - nlocals - nparams, nparams);
 
   out << ")";
 }

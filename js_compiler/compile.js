@@ -50,7 +50,14 @@ var OperatorCode = Object.freeze({
 	"INT_JMP_LE": 22,
 	"STR_PUSH_CONSTANT": 23,
 	"STR_JMP_EQ": 24,
-	"STR_JMP_NEQ": 25
+	"STR_JMP_NEQ": 25,
+	"NEW_OBJECT": 32,
+	"PUSH_FROM_OBJECT": 33,
+	"POP_INTO_OBJECT": 34,
+	"CALL_INDIRECT": 35,
+	"SYSTEM_COLLECT": 36,
+	"NEW": 37,
+	"PUSH_THIS": 38
 });
 
 /// Binary comparison operators converted to jump instructions
@@ -88,6 +95,11 @@ var Instruction = function (operator, operand) {
 
 	/// Output this instruction as an encoded uint32_t (little endian).
 	this.output = function (out) {
+		var code = OperatorCode[this.operator];
+		if (code == undefined) {
+			throw "uncrecognized operator: " + this.operator;
+		}
+
 		var encoded = (OperatorCode[this.operator] << 24);
 		if (this.operand) {
 			encoded |= this.operand & 0x00FFFFFF;
@@ -548,6 +560,29 @@ function FirstPassCodeGen() {
 		this.functionContext.exitFunction();
 	};
 
+	this.handleMemberExpression = function(func, expression) {
+		var id = this.module.strings.get(expression.property.name);
+		this.handle(func, expression.object);
+		func.instructions.push(new Instruction("PUSH_FROM_OBJECT", id));
+	};
+
+	this.assignToMember = function (func, objectExpression, property, valueExpression) {
+		if (property.type != "Identifier") {
+			throw new Error("Can only store to identifiers." + JSON.stringify(property));
+		}
+
+		// intern property for uuid
+		var id = this.module.strings.get(property.name);
+
+		this.handle(func, valueExpression);
+		this.handle(func, objectExpression);
+		func.instructions.push(new Instruction("POP_INTO_OBJECT", id));
+	};
+
+	this.assignToParameter = function (func, param, valueExpression) {
+		throw new Error("Failed to compile assignment to parameter " + param);
+	};
+
 	this.handleAssignmentExpression = function (func, expression) {
 		var AssignmentOperatorCode = Object.freeze({
 			"+=": "INT_ADD",
@@ -555,6 +590,10 @@ function FirstPassCodeGen() {
 			"/=": "INT_DIV",
 			"*=": "INT_MUL"
 		});
+
+		if (expression.left.type == "MemberExpression") {
+			return this.assignToMember(func, expression.left.object, expression.left.property, expression.right);
+		}
 
 		if (expression.left.type == "Identifier") {
 			var operator = AssignmentOperatorCode[expression.operator];
@@ -577,10 +616,42 @@ function FirstPassCodeGen() {
 		this.handle(func, expression.right);
 	};
 
+	this.handleNewExpression = function (func, expression) {
+		if (expression.callee.type != "Identifier") {
+			throw "Only handles named functions";
+		}
+
+		if (!expression.callee.name) {
+			throw "Trying to compile call to function with no name";
+		}
+
+		/// TODO: Only supports calling functions by name
+		if (expression.callee.name == "b9_primitive") {
+			throw "Cannot use b9_primitive as constructor";
+		}
+
+		this.emitFunctionNew(func, expression);
+	};
+
+	// see also: emitFunctionCall, emitPrimitiveCall
+	this.emitFunctionNew = function (func, expression) {
+		var symbol = this.functionContext.lookup(expression.callee.name);
+		if (symbol.type != "function") {
+			throw Error("Target not a direct function call: " + JSON.stringify(symbol));
+		}
+
+		this.handleBody(func, expression.arguments);
+		func.instructions.push(new Instruction("NEW", symbol.id));
+	};
+
+	this.handleThisExpression = function (func, express) {
+		func.instructions.push(new Instruction("PUSH_THIS"));
+	}
+
 	this.handleVariableDeclaration = function (func, declaration) {
 		/// composed of potentially multiple variables.
 		this.handleBody(func, declaration.declarations);
-	}
+	};
 
 	this.handleVariableDeclarator = function (func, declarator) {
 		var id = func.locals.get(declarator.id.name);
@@ -856,8 +927,8 @@ function main() {
 	var code = fs.readFileSync(__dirname + "/b9stdlib.js", 'utf-8');
 	code += fs.readFileSync(inputPath, 'utf-8');
 
-
 	output = fs.openSync(outputPath, "w");
+
 	compile(code, output);
 };
 

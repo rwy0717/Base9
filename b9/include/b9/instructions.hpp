@@ -85,6 +85,12 @@ enum class OpCode : RawOpCode {
   CALL_INDIRECT = 0x23,
 
   SYSTEM_COLLECT = 0x24,
+
+  // New and This
+
+  NEW = 0x25,
+
+  PUSH_THIS = 0x26
 };
 
 inline const char *toString(OpCode bc) {
@@ -151,6 +157,10 @@ inline const char *toString(OpCode bc) {
       return "call_indirect";
     case OpCode::SYSTEM_COLLECT:
       return "system_collect";
+    case OpCode::NEW:
+      return "new";
+    case OpCode::PUSH_THIS:
+      return "push_this";
     default:
       return "UNKNOWN_BYTECODE";
   }
@@ -258,6 +268,7 @@ inline std::ostream &operator<<(std::ostream &out, Instruction i) {
     case OpCode::NEW_OBJECT:
     case OpCode::CALL_INDIRECT:
     case OpCode::SYSTEM_COLLECT:
+    case OpCode::PUSH_THIS:
       break;
     // 1 immediate
     case OpCode::FUNCTION_CALL:
@@ -279,8 +290,11 @@ inline std::ostream &operator<<(std::ostream &out, Instruction i) {
     case OpCode::STR_JMP_NEQ:
     case OpCode::PUSH_FROM_OBJECT:
     case OpCode::POP_INTO_OBJECT:
-    default:
+    case OpCode::NEW:
       out << " " << i.immediate();
+      break;
+    default:
+      out << "UNKNOWN " << std::uint64_t(i.opCode()) << " " << i.immediate();
       break;
   }
   return out << ")";

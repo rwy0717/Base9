@@ -85,7 +85,7 @@ class OperandStack {
 inline std::ostream &printStack(std::ostream &out, const OperandStack &stack) {
   out << "(stack";
 
-  for (auto e : stack) {
+  for (const auto& e : stack) {
     out << std::endl << "  " << e;
   }
 

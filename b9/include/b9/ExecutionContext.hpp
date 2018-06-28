@@ -41,7 +41,7 @@ namespace b9 {
 //
 // clang-format on
 
-enum class CallerType { INTERPRETER, COMPILED, OUTERMOST };
+enum class CallerType { INTERPRETER = 1234, INTERPRETER_NEW = 5678, COMPILED = 9012, OUTERMOST = 3456 };
 
 class ExecutionContext {
  public:
@@ -51,7 +51,11 @@ class ExecutionContext {
 
   StackElement run(std::size_t target);
 
+  /// set up for execution and allocate a new this object.
   void reset();
+
+  /// clear all execution state.
+  void clear();
 
   OperandStack &stack() { return stack_; }
 
@@ -59,6 +63,8 @@ class ExecutionContext {
 
   template <typename VisitorT>
   void visit(VisitorT &visitor) {
+    if (this_) visitor.edge(this, Om::BasicSlotHandle(&this_));
+
     stack_.visit(visitor);
   }
 
@@ -92,6 +98,8 @@ class ExecutionContext {
   /// Push all interpreter state to the operand stack. Adjusts bp, but leaves
   /// other state intact. The arguments are already pushed on the stack.
   /// Reserves space for target's locals.
+  void enterCall(std::size_t target, CallerType type, Om::Object *thisp);
+
   void enterCall(std::size_t target, CallerType type = CallerType::INTERPRETER);
 
   /// Pop all interpreter state from the operand stack. Resets all interpreter
@@ -103,8 +111,8 @@ class ExecutionContext {
   }
 
  private:
-  void printCall(std::ostream &out, std::size_t i, std::size_t fn,
-                 const Instruction *ip, const Om::Value *tp,
+  void printCall(std::ostream &out, std::size_t i, const Om::Object *thisp,
+                 std::size_t fn, const Instruction *ip, const Om::Value *tp,
                  const Om::Value *bp) const;
 
   /// @group Operator Handlers
@@ -166,6 +174,10 @@ class ExecutionContext {
 
   void doSystemCollect();
 
+  void doNew();
+
+  void doPushThis();
+
   /// @}
 
   Om::RunContext omContext_;
@@ -175,6 +187,10 @@ class ExecutionContext {
 
   /// @group Interpreter State
   /// @{
+
+  // current "this" object pointer.
+  Om::Object *this_;
+
   // current function index.
   std::size_t fn_;
   // current instruction pointer.
