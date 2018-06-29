@@ -220,10 +220,10 @@ bool MethodBuilder::buildIL() {
   Store("stackTop", stackTop);
 
   if (cfg_.lazyVmState) {
-    auto simulatedStackTop = new OMR::VirtualMachineRegisterInStruct(
+    auto simulatedStackTop = new TR::VirtualMachineRegisterInStruct(
         this, "b9::OperandStack", "stack", "top_", "stackTop");
 
-    auto simulateOperandStack = new OMR::VirtualMachineOperandStack(
+    auto simulateOperandStack = new TR::VirtualMachineOperandStack(
         this, 64 /* starting size */, globalTypes().stackElement,
         simulatedStackTop, true /* grows up */, 0 /* commit address offset */);
 
@@ -232,7 +232,7 @@ bool MethodBuilder::buildIL() {
     setVMState(vms);
 
   } else {
-    setVMState(new OMR::VirtualMachineState());
+    setVMState(new TR::VirtualMachineState());
   }
 
   /// When this function exits, we reset the stack top to the beginning of

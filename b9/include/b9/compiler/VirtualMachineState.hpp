@@ -10,12 +10,12 @@ namespace b9 {
 
 /// Simulates all state of the virtual machine state while compiled code is
 /// running. It simulates the stack and the pointer to the top of the stack.
-class VirtualMachineState : public OMR::VirtualMachineState {
+class VirtualMachineState : public TR::VirtualMachineState {
  public:
   VirtualMachineState() = default;
 
-  VirtualMachineState(OMR::VirtualMachineOperandStack *stack,
-                      OMR::VirtualMachineRegister *stackTop)
+  VirtualMachineState(TR::VirtualMachineOperandStack *stack,
+                      TR::VirtualMachineRegister *stackTop)
       : _stack(stack), _stackTop(stackTop) {}
 
   void Commit(TR::IlBuilder *b) override {
@@ -31,20 +31,20 @@ class VirtualMachineState : public OMR::VirtualMachineState {
   VirtualMachineState *MakeCopy() override {
     auto newState = new VirtualMachineState();
     newState->_stack =
-        dynamic_cast<OMR::VirtualMachineOperandStack *>(_stack->MakeCopy());
+        dynamic_cast<TR::VirtualMachineOperandStack *>(_stack->MakeCopy());
     newState->_stackTop =
-        dynamic_cast<OMR::VirtualMachineRegister *>(_stackTop->MakeCopy());
+        dynamic_cast<TR::VirtualMachineRegister *>(_stackTop->MakeCopy());
     return newState;
   }
 
-  void MergeInto(OMR::VirtualMachineState *other, TR::IlBuilder *b) override {
+  void MergeInto(TR::VirtualMachineState *other, TR::IlBuilder *b) override {
     auto otherState = dynamic_cast<VirtualMachineState *>(other);
     _stack->MergeInto(otherState->_stack, b);
     _stackTop->MergeInto(otherState->_stackTop, b);
   }
 
-  OMR::VirtualMachineOperandStack *_stack = nullptr;
-  OMR::VirtualMachineRegister *_stackTop = nullptr;
+  TR::VirtualMachineOperandStack *_stack = nullptr;
+  TR::VirtualMachineRegister *_stackTop = nullptr;
 };
 
 }  // namespace b9
