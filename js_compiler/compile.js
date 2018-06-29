@@ -97,7 +97,7 @@ var Instruction = function (operator, operand) {
 	this.output = function (out) {
 		var code = OperatorCode[this.operator];
 		if (code == undefined) {
-			throw "uncrecognized operator: " + this.operator;
+			throw "unrecognized operator: " + this.operator;
 		}
 
 		var encoded = (OperatorCode[this.operator] << 24);
@@ -549,9 +549,10 @@ function FirstPassCodeGen() {
 		});
 		inner.nparams = declaration.params.length;
 		this.handle(inner, declaration.body);
-
+	
 		/// this discards the result of the last expression
-		if (inner.instructions[inner.instructions.length - 1].operator != "FUNCTION_RETURN") {
+		if (inner.instructions.length == 0
+			|| inner.instructions[inner.instructions.length - 1].operator != "FUNCTION_RETURN") {
 			inner.instructions.push(new Instruction("INT_PUSH_CONSTANT", 0));
 			inner.instructions.push(new Instruction("FUNCTION_RETURN", 0));
 		}
